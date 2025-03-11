@@ -1,12 +1,20 @@
 package com.tokbox.sample.basicvideochat
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Intent
 import android.opengl.GLSurfaceView
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.core.content.getSystemService
 import com.opentok.android.BaseVideoRenderer
 import com.opentok.android.OpentokError
 import com.opentok.android.Publisher
@@ -18,7 +26,6 @@ import com.opentok.android.Stream
 import com.opentok.android.Subscriber
 import com.opentok.android.SubscriberKit
 import com.opentok.android.SubscriberKit.SubscriberListener
-import com.tokbox.sample.basicvideochat.MainActivity
 import com.tokbox.sample.basicvideochat.network.APIService
 import com.tokbox.sample.basicvideochat.network.GetSessionResponse
 import okhttp3.OkHttpClient
@@ -31,6 +38,8 @@ import retrofit2.Callback
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity(), PermissionCallbacks {
     private var retrofit: Retrofit? = null
@@ -40,6 +49,12 @@ class MainActivity : AppCompatActivity(), PermissionCallbacks {
     private var subscriber: Subscriber? = null
     private lateinit var publisherViewContainer: FrameLayout
     private lateinit var subscriberViewContainer: FrameLayout
+
+    private fun startForegroundService() {
+        val serviceIntent = Intent(this, MicrophoneForegroundService::class.java)
+        ContextCompat.startForegroundService(this, serviceIntent)
+    }
+
     private val publisherListener: PublisherListener = object : PublisherListener {
         override fun onStreamCreated(publisherKit: PublisherKit, stream: Stream) {
             Log.d(TAG, "onStreamCreated: Publisher Stream Created. Own stream ${stream.streamId}")
@@ -118,16 +133,52 @@ class MainActivity : AppCompatActivity(), PermissionCallbacks {
         setContentView(R.layout.activity_main)
         publisherViewContainer = findViewById(R.id.publisher_container)
         subscriberViewContainer = findViewById(R.id.subscriber_container)
+
+        if (Build.VERSION.SDK_INT >= 26) {
+            val channel = NotificationChannel(
+                "microphone_channel", "Microphone Notifications",
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            var notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+
         requestPermissions()
+
     }
 
     override fun onPause() {
-        super.onPause()
+        Intent(applicationContext, MicrophoneForegroundService::class.java)
+            .also {
+                it.action = MicrophoneForegroundService.Actions.START.toString();
+                startService(it)
+            }
+        Log.d(TAG, "onPause")
+        super.onPause();
+
+
+        //In our app, we don't pause session because we want to have audio when app is going to background
         session?.onPause()
+        //publisher?.publishVideo = false;
+
+        //In our application, we have set publisher?.publishVideo = false in callback when application goes to background
+        //And that causes exception.
+        //It is probably because of some threads race. Here we can reproduce this exception when we wait 5 seconds
+       /*Executors.newSingleThreadScheduledExecutor().schedule({
+            Log.d(TAG, "onPause: publisher?.publishVideo = false;")
+            session?.onPause()
+            //publisher?.publishVideo = false;
+        }, 5000, TimeUnit.MILLISECONDS)*/
     }
 
     override fun onResume() {
+        Intent(applicationContext, MicrophoneForegroundService::class.java)
+            .also {
+                it.action = MicrophoneForegroundService.Actions.STOP.toString();
+                startService(it)
+            }
         super.onResume()
+        //publisher?.publishVideo = true;
         session?.onResume()
     }
 
@@ -144,9 +195,11 @@ class MainActivity : AppCompatActivity(), PermissionCallbacks {
         finishWithMessage("onPermissionsDenied: $requestCode: $perms")
     }
 
+    @SuppressLint("InlinedApi")
     @AfterPermissionGranted(PERMISSIONS_REQUEST_CODE)
     private fun requestPermissions() {
-        val perms = arrayOf(Manifest.permission.INTERNET, Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        val perms = arrayOf(Manifest.permission.INTERNET, Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.POST_NOTIFICATIONS)
         if (EasyPermissions.hasPermissions(this, *perms)) {
             if (ServerConfig.hasChatServerUrl()) {
                 // Custom server URL exists - retrieve session config
